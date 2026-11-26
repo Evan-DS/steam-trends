@@ -1,0 +1,16 @@
+# Everything the program makes can be rebuilt with: python main.py
+data/derived/*
+!data/derived/.gitkeep
+output/*
+!output/.gitkeep
+
+# Secrets: never commit API tokens
+kaggle.json
+.env
+
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
