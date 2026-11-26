@@ -8,6 +8,6 @@ xgboost
 pytest
 
 # Only needed to regenerate the source data (python main.py --download)
-huggingface_hub
-kaggle
-kagglehub
+# huggingface_hub
+# kaggle
+# kagglehub
