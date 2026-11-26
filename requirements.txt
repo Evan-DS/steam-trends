@@ -1,0 +1,13 @@
+pandas>=2.0
+numpy
+scipy
+pyarrow
+matplotlib
+scikit-learn
+xgboost
+pytest
+
+# Only needed to regenerate the source data (python main.py --download)
+huggingface_hub
+kaggle
+kagglehub
