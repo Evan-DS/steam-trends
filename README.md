@@ -73,8 +73,6 @@ pytest                         # run the unit tests
 └── tests/
 ```
 
-`python main.py --download` saves the slim version automatically.
-
 ## Optional: regenerating the source data
 
 The two source files were built from public datasets:
