@@ -18,7 +18,7 @@ We predict three measures of a Steam game's success (reception, reach and engage
 
    | File | What it is | Size |
    |---|---|---|
-   | `games.parquet` | the full Steam catalogue (Steam Games Dataset), without unused text columns |
+   | `games.parquet` | the full Steam catalogue (Steam Games Dataset), without unused text columns | ~7.5 MB |
    | `review_features.parquet` | early-review features of the 2,000-game Model B sample | ~80 KB |
 
    See Kaggle and Huggling Face links below.
