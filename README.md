@@ -9,8 +9,6 @@ We predict three measures of a Steam game's success (reception, reach and engage
 1. Install Python 3.10 or newer, then the libraries (adjust requirements.txt if regenerating data):
 
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate          # Windows: .venv\Scripts\activate
    pip install -r requirements.txt
    ```
 
@@ -21,7 +19,7 @@ We predict three measures of a Steam game's success (reception, reach and engage
    | `games.parquet` | the full Steam catalogue (Steam Games Dataset), without unused text columns | ~7.5 MB |
    | `review_features.parquet` | early-review features of the 2,000-game Model B sample | ~80 KB |
 
-   See Kaggle and Huggling Face links below.
+   See Kaggle and Hugging Face links below.
 
 3. Run it:
 
@@ -29,7 +27,7 @@ We predict three measures of a Steam game's success (reception, reach and engage
    python main.py
    ```
 
-It prints its progress with timestamps as it goes and takes about 35 minutes; the tuning step is most of that. When it finishes, open **`output/report.html`** in a browser: it holds every results table and figure on one page.
+It prints its progress with timestamps as it goes and takes about 35 minutes; the tuning step is most of that. A copy of everything it prints is also saved to a log file in `logs/` (one file per run, for example `logs/run_2026-11-27_14-05-31.log`). When it finishes, open **`output/report.html`** in a browser: it holds every results table and figure on one page, with a menu at the top to jump between sections and click-to-enlarge figures.
 
 No internet connection or API key is needed. The same two source files always give the same results.
 
@@ -52,8 +50,24 @@ python main.py --slim-games    # shrink an older, full-size games.parquet (see b
 python main.py --list          # show the steps
 python main.py --steps 3       # run one step (the earlier steps' files must exist)
 python main.py --steps 3-5     # run a range of steps
+python main.py --scrub         # delete everything the program has generated (see below)
 pytest                         # run the unit tests
 ```
+
+### Cleaning up: `--scrub`
+
+```bash
+python main.py --scrub
+```
+
+removes everything running the program creates, so the project is back to a clean state:
+
+- `data/derived/`: every file the steps derived from the source data (and any temporary downloads)
+- `output/`: `report.html` and the figures
+- `logs/`: the run logs
+- Python's compiled-code caches (`__pycache__` folders and `.pytest_cache`)
+
+It does **not** touch `data/source/` (the two input files: getting them back means the multi-hour `--download` or the original zip), the empty `.gitkeep` placeholders, or anything outside the project folder (for example the download caches that `--download` leaves in your home directory). Everything it removes can be rebuilt with `python main.py`. `--scrub` cannot be combined with other options, and it does not write a log file (a log of the clean-up would itself be a leftover).
 
 ## Project structure
 
@@ -64,9 +78,12 @@ pytest                         # run the unit tests
 │   ├── source/               the two input files*
 │   └── derived/              everything the program makes from them
 ├── output/                   report.html and figures/
+├── logs/                     one log file per run (made when you run the program)
 ├── src/steam_success/
 │   ├── pipeline.py           runs the steps in order and prints progress
 │   ├── config.py             folders, random seed, model settings
+│   ├── runlog.py             saves everything printed to a log file
+│   ├── scrub.py              the --scrub command
 │   ├── data.py · modeling.py · plotting.py · printing.py · progress.py · kaggle_client.py
 │   └── steps/                clean, features, model_a, model_b, explain, tuning, report,
 │                             and load_and_join (only used with --download)
@@ -88,6 +105,6 @@ export HF_TOKEN=your_token             # optional: the Hugging Face dataset is p
 python main.py --download
 ```
 
-If the Kaggle token isn't set, the program asks for it. This downloads the game catalogue and, one game at a time, the review files of the 2,000 sampled games, deleting each after reading it (a few GB of downloads in total, not the full 15 GB). It takes a few hours because of Kaggle's rate limits. The datasets are updated by their authors over time, so a fresh download can give slightly different numbers from the provided files.
+If the Kaggle token isn't set, the program asks for it. This downloads the game catalogue and, one game at a time, the review files of the 2,000 sampled games, deleting each after reading it (a few GB of downloads in total, not the full 15 GB). It takes a few hours because of Kaggle's rate limits. The files it writes to `data/source/` are not removed by `--scrub`. The datasets are updated by their authors over time, so a fresh download can give slightly different numbers from the provided files.
 
 Keep API tokens out of the code and out of git (`kaggle.json` and `.env` are ignored).
