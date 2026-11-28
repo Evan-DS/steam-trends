@@ -27,7 +27,7 @@ We predict three measures of a Steam game's success (reception, reach and engage
    python main.py
    ```
 
-It prints its progress with timestamps as it goes and takes about 35 minutes; the tuning step is most of that. A copy of everything it prints is also saved to a log file in `logs/` (one file per run, for example `logs/run_2026-11-27_14-05-31.log`). When it finishes, open **`output/report.html`** in a browser: it holds every results table and figure on one page, with a menu at the top to jump between sections and click-to-enlarge figures.
+It prints its progress with timestamps as it goes and takes about 35 minutes; the tuning step is most of that. A copy of everything it prints is also saved to a log file in `logs/`. When it finishes, open **`output/report.html`** in a browser: it holds every results table and figure on one page, with a menu at the top to jump between sections and click-to-enlarge figures.
 
 No internet connection or API key is needed. The same two source files always give the same results.
 
