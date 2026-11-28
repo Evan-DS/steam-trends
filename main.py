@@ -9,7 +9,7 @@ Options (none are needed):
     python main.py --slim-games    shrink data/source/games.parquet so it fits on GitHub
     python main.py --scrub         delete everything the program has generated (the input data is kept)
 
-Every run also saves a copy of its console output to a file in logs/.
+Every run also saves a copy of its live console output to a file in logs/.
 """
 import sys
 from pathlib import Path
