@@ -2,7 +2,7 @@
 import time
 from datetime import datetime
 
-_start = time.time()
+_start = time.time()   # when the program started, used for the "+ x min" part of each message
 
 
 def status(message: str):
@@ -12,5 +12,6 @@ def status(message: str):
 
 
 def banner(text: str):
+    """Print a title between two lines, to mark the start of a step."""
     line = "=" * 72
     print(f"\n{line}\n{text}\n{line}", flush=True)
