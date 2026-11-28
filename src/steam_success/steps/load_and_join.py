@@ -1,9 +1,12 @@
-"""Regeneration only — download the game metadata and check that review files join to it.
+"""Regeneration only: download the game metadata and check that review files join to it.
 
 Not part of the normal run, which starts from data/source. Used by: python main.py --download
 
 Inputs : Steam Games Dataset (Hugging Face), Steam Games Reviews 2024 (Kaggle)
 Outputs: data/source/games.parquet; data/derived/review_counts.parquet, review_schema.csv
+
+"Join" means matching rows of two tables through a shared key; here, the game's AppID, which appears
+in both the game catalogue and the review files.
 """
 import csv
 import glob
@@ -29,9 +32,11 @@ MAX_FILES = 60     # upper bound on review files downloaded
 # Game metadata
 # ---------------------------------------------------------------------------
 def download_games_csv() -> str:
-    from huggingface_hub import hf_hub_download
+    """Download games.csv from Hugging Face (cached on disk after the first time) and return its path."""
+    from huggingface_hub import hf_hub_download   # imported here: only needed when regenerating the data
 
     path = hf_hub_download(config.GAMES_REPO, "games.csv", repo_type="dataset")
+    # the cache stores the file under a snapshot folder; search for it so the exact layout does not matter
     return glob.glob(f"{os.path.dirname(path)}/**/games.csv", recursive=True)[0]
 
 
@@ -42,10 +47,11 @@ def load_games(path: str) -> pd.DataFrame:
     name one column to the left. Splitting it puts each name back on its data.
     """
     with open(path, newline="", encoding="utf-8") as f:
-        header = next(csv.reader(f))
+        header = next(csv.reader(f))   # just the first line: the column names
     if "DiscountDLC count" in header:
         i = header.index("DiscountDLC count")
-        header[i:i + 1] = ["Discount", "DLC count"]
+        header[i:i + 1] = ["Discount", "DLC count"]   # replace the one glued name with the two real ones
+    # Read the data with our corrected names (skiprows=1 skips the broken header line)
     df = pd.read_csv(path, names=header, skiprows=1, index_col=False, low_memory=False)
     df["AppID"] = pd.to_numeric(df["AppID"], errors="coerce").astype("Int64")
     for c in ["Price", "Positive", "Negative", "Median playtime forever"]:
@@ -57,6 +63,7 @@ def load_games(path: str) -> pd.DataFrame:
 def check_alignment(games: pd.DataFrame):
     """After the header fix, numeric columns must actually hold numbers."""
     numeric_share = {c: games[c].notna().mean() for c in ["Price", "Positive"]}
+    # if the columns were still shifted, these would be mostly text (missing after conversion)
     assert all(v > 0.95 for v in numeric_share.values()), f"Column alignment check failed: {numeric_share}"
 
 
@@ -71,40 +78,43 @@ def select_sample(api, dataset: str, limit_bytes: float, max_files: int):
         for f in resp.files or []:
             size = f.total_bytes or 0
             if not f.name.endswith((".csv", ".parquet")):
-                continue
+                continue   # skip anything that is not a data file
             if len(picked) >= max_files or (picked and used + size > limit_bytes):
-                return picked, used
+                return picked, used   # the budget (number of files or total size) is used up
             picked.append(f.name)
             used += size
         token = resp.next_page_token
         if not token:
-            return picked, used
-        time.sleep(2)
+            return picked, used   # no more pages
+        time.sleep(2)   # a short pause between pages, to stay polite to Kaggle
 
 
 def download_file(api, dataset: str, name: str, fallback_dir=None) -> str:
     """Download one dataset file via kagglehub, falling back to the Kaggle API."""
-    import kagglehub
+    import kagglehub   # imported here: only needed when regenerating the data
 
     fallback_dir = fallback_dir or str(config.DOWNLOAD_DIR / "join_check")
     try:
         return with_retry(lambda: kagglehub.dataset_download(dataset, path=name), name)
     except Exception as e:
         if "429" in str(e):
-            raise
+            raise   # rate-limited: the fallback would be blocked too
+    # kagglehub failed for another reason: try the plain Kaggle API instead
     os.makedirs(fallback_dir, exist_ok=True)
     with_retry(lambda: api.dataset_download_file(dataset, name, path=fallback_dir, quiet=True), name)
     path = os.path.join(fallback_dir, os.path.basename(name))
     if not os.path.exists(path) and os.path.exists(path + ".zip"):
-        zipfile.ZipFile(path + ".zip").extractall(fallback_dir)
+        zipfile.ZipFile(path + ".zip").extractall(fallback_dir)   # the API may deliver the file zipped
     return path
 
 
 def read_head(path: str, n: int = 5) -> pd.DataFrame:
+    """The first n rows of a review file (parquet or CSV)."""
     return pd.read_parquet(path).head(n) if path.endswith(".parquet") else pd.read_csv(path, nrows=n)
 
 
 def find_col(cols, candidates):
+    """The first of the candidate names that exists among the columns (ignoring upper/lower case), or None."""
     lower = {c.lower(): c for c in cols}
     return next((lower[c] for c in candidates if c in lower), None)
 
@@ -120,6 +130,7 @@ def detect_schema(sample: pd.DataFrame) -> dict:
 
 
 def app_id_from_filename(path: str):
+    """The first number in a file's name, taken as the game's AppID (None if there is no number)."""
     m = re.search(r"(\d+)", os.path.basename(path))
     return int(m.group(1)) if m else None
 
@@ -130,7 +141,7 @@ def count_reviews(files, app_col) -> pd.DataFrame:
     for p in files:
         if app_col is None:   # one file per game: the App ID is in the file name
             n = (len(pd.read_parquet(p, columns=[])) if p.endswith(".parquet")
-                 else sum(len(c) for c in pd.read_csv(p, usecols=[0], chunksize=2_000_000)))
+                 else sum(len(c) for c in pd.read_csv(p, usecols=[0], chunksize=2_000_000)))   # read in chunks: files can be huge
             counts[app_id_from_filename(p)] += n
         elif p.endswith(".parquet"):
             counts.update(pd.read_parquet(p, columns=[app_col])[app_col].dropna().astype("int64"))
@@ -146,9 +157,10 @@ def count_reviews(files, app_col) -> pd.DataFrame:
 # Join check
 # ---------------------------------------------------------------------------
 def join_summary(games: pd.DataFrame, rev_counts: pd.DataFrame) -> pd.DataFrame:
+    """How well the review sample lines up with the game catalogue."""
     eligible = games[(games["Positive"] + games["Negative"]) >= config.MIN_REVIEWS]
-    resolved = rev_counts["AppID"].isin(games["AppID"])
-    covered = eligible["AppID"].isin(rev_counts["AppID"])
+    resolved = rev_counts["AppID"].isin(games["AppID"])      # review games that exist in the catalogue
+    covered = eligible["AppID"].isin(rev_counts["AppID"])    # catalogue games that the sample covers
     return pd.DataFrame({
         "value": [len(games), len(eligible), len(rev_counts), resolved.sum(), covered.sum()],
         "share": [None, None, None, resolved.mean(), covered.mean()],
@@ -157,9 +169,10 @@ def join_summary(games: pd.DataFrame, rev_counts: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_outputs(games: pd.DataFrame, rev_counts: pd.DataFrame, schema: dict):
+    """Save games.parquet (the source file the pipeline starts from) and the join-check tables."""
     games_out = games.copy()
     for c in games_out.select_dtypes("object").columns:
-        games_out[c] = games_out[c].astype("string")
+        games_out[c] = games_out[c].astype("string")   # a text type that parquet stores reliably
     size_mb = save_games(games_out, config.source_file(config.GAMES_FILE))
     rev_counts.to_parquet(config.derived_file("review_counts.parquet"), index=False)
     pd.Series(schema, name="column").to_csv(config.derived_file("review_schema.csv"))
@@ -167,6 +180,7 @@ def save_outputs(games: pd.DataFrame, rev_counts: pd.DataFrame, schema: dict):
 
 
 def main():
+    """Run this step: download the catalogue and a review sample, check the join, save games.parquet."""
     api = connect()
 
     status("Downloading the Steam Games Dataset from Hugging Face ...")
@@ -179,7 +193,7 @@ def main():
     rev_files = []
     for name in names:
         rev_files.append(download_file(api, config.REVIEWS_DATASET, name))
-        time.sleep(1)
+        time.sleep(1)   # a short pause between downloads, to stay polite to Kaggle
     print(f"Review sample: {len(rev_files)} files, {sample_bytes / 1e9:.2f} GB")
 
     schema = detect_schema(read_head(rev_files[0]))

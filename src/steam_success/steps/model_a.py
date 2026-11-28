@@ -1,4 +1,4 @@
-"""Step 4 — Model A: predict each success measure from launch features only.
+"""Step 3: Model A predicts each success measure from launch features only.
 
 A baseline (ridge / logistic regression) and XGBoost are compared with 5-fold
 cross-validation; every game is predicted by a model that never saw it.
@@ -6,6 +6,10 @@ cross-validation; every game is predicted by a model that never saw it.
 Inputs : data/derived/games_clean.parquet, launch_features.parquet
 Outputs: data/derived/model_a_results.csv, model_a_summary.csv, model_a_robustness.csv,
          model_a_predictions.parquet; figures 04_*.png
+
+Scores used:
+    R²        share of the variation in a number that the model explains (0 = no better than guessing the average)
+    macro F1  F1 score (balances catching true cases against false alarms) averaged over the four reach tiers
 """
 from dataclasses import dataclass
 
@@ -30,8 +34,9 @@ LATE_FEATURES = ["n_languages", "n_audio_languages", "log_achievements"]
 
 @dataclass
 class ModelAData:
+    """Everything the Model A evaluations need, loaded once and passed around together."""
     data: pd.DataFrame       # all games with targets and features
-    features: list[str]
+    features: list[str]      # names of the model-input columns
     X: pd.DataFrame          # all games
     y_reception: pd.Series
     y_reach: pd.Series
@@ -41,11 +46,14 @@ class ModelAData:
 
 
 def load_data() -> ModelAData:
+    """Join the success measures to the launch features and pick the games each model uses."""
     games, features = load_games_clean(), load_launch_features()
     targets = games[["AppID", "Name", "pct_positive", "reach_code", "median_playtime_h"]]
+    # validate="one_to_one" stops with an error if any AppID appeared twice on either side
     data = targets.merge(features, on="AppID", how="inner", validate="one_to_one")
     cols = feature_columns(features)
     X = data[cols].astype(float)
+    # Engagement is only modelled for games that have playtime data and at least 20k owners
     eng = data["median_playtime_h"].notna() & (data["reach_code"] >= config.ENGAGEMENT_MIN_TIER)
     return ModelAData(
         data=data, features=cols, X=X,
@@ -53,7 +61,7 @@ def load_data() -> ModelAData:
         y_reach=data["reach_code"].astype(int),
         engagement_rows=eng,
         X_eng=X[eng].reset_index(drop=True),
-        y_eng=np.log(data.loc[eng, "median_playtime_h"]).reset_index(drop=True),
+        y_eng=np.log(data.loc[eng, "median_playtime_h"]).reset_index(drop=True),   # log: playtime is very skewed
     )
 
 
@@ -61,17 +69,19 @@ def load_data() -> ModelAData:
 # The three measures
 # ---------------------------------------------------------------------------
 def evaluate_reception(d: ModelAData):
+    """Ridge and XGBoost predictions for reception, plus a table that includes 'predict the average'."""
     preds = {
         "Ridge (baseline)": out_of_fold_predictions(lambda: baseline_model(REGRESSION), d.X, d.y_reception, REGRESSION),
         "XGBoost": out_of_fold_predictions(lambda: xgb_model(REGRESSION), d.X, d.y_reception, REGRESSION),
     }
-    naive = np.full(len(d.y_reception), d.y_reception.mean())
-    table = pd.DataFrame({"Predict the average": regression_scores(d.y_reception, naive, 100),
+    naive = np.full(len(d.y_reception), d.y_reception.mean())   # the "reference": the same average for every game
+    table = pd.DataFrame({"Predict the average": regression_scores(d.y_reception, naive, 100),   # x100: percentage points
                           **{k: regression_scores(d.y_reception, v, 100) for k, v in preds.items()}}).T
     return table, preds
 
 
 def evaluate_reach(d: ModelAData):
+    """Logistic regression and XGBoost predictions for the reach tier, plus 'always predict Low'."""
     preds = {
         "Logistic (baseline)": out_of_fold_predictions(lambda: baseline_model(CLASSIFICATION), d.X, d.y_reach,
                                                        CLASSIFICATION),
@@ -85,6 +95,7 @@ def evaluate_reach(d: ModelAData):
 
 
 def evaluate_engagement(d: ModelAData):
+    """Ridge and XGBoost predictions for log playtime, plus 'predict the average'."""
     preds = {
         "Ridge (baseline)": out_of_fold_predictions(lambda: baseline_model(REGRESSION), d.X_eng, d.y_eng, REGRESSION),
         "XGBoost": out_of_fold_predictions(lambda: xgb_model(REGRESSION), d.X_eng, d.y_eng, REGRESSION),
@@ -92,11 +103,13 @@ def evaluate_engagement(d: ModelAData):
     naive = np.full(len(d.y_eng), d.y_eng.mean())
     table = pd.DataFrame({"Predict the average": regression_scores(d.y_eng, naive),
                           **{k: regression_scores(d.y_eng, v) for k, v in preds.items()}}).T
+    # The model works in log hours, so exp(RMSE) turns its typical error into "off by a factor of x"
     table["Typical factor off"] = np.exp(table["RMSE"])
     return table, preds
 
 
 def summary_table(results: dict) -> pd.DataFrame:
+    """Table III: the main score of the reference, the baseline and XGBoost for each measure."""
     rec, reach, eng = results["Reception"], results["Reach"], results["Engagement"]
     return pd.DataFrame({
         "Measure": ["Reception", "Reach", "Engagement"],
@@ -113,15 +126,21 @@ def summary_table(results: dict) -> pd.DataFrame:
 # Feature importance and robustness
 # ---------------------------------------------------------------------------
 def top_importance(model, X, y, n=10, **fit_kw) -> pd.Series:
-    """Share of XGBoost's total gain per feature (top n)."""
+    """Share of XGBoost's total gain per feature (top n).
+
+    "Gain" is how much each feature improves the model's splits; a feature's share of the total gain
+    shows how much of the model's work it does.
+    """
     model.fit(X, y, **fit_kw)
     gain = pd.Series(model.get_booster().get_score(importance_type="total_gain"))
+    # features the model never used are missing from `gain`, so reindex + fillna(0) lists them with 0
     return (gain / gain.sum()).reindex(X.columns).fillna(0).sort_values(ascending=False).head(n)
 
 
 def robustness_check(d: ModelAData) -> pd.DataFrame:
     """XGBoost scores without the features that can change after launch."""
     def xgb_scores(cols):
+        """Cross-validated XGBoost scores for all three measures using only the feature columns `cols`."""
         rec = score(REGRESSION, d.y_reception,
                     out_of_fold_predictions(lambda: xgb_model(REGRESSION), d.X[cols], d.y_reception, REGRESSION))
         reach = score(CLASSIFICATION, d.y_reach,
@@ -139,11 +158,13 @@ def robustness_check(d: ModelAData) -> pd.DataFrame:
 
 
 def plot_confusion(y_true, y_pred):
-    cm = confusion_matrix(y_true, y_pred, normalize="true")
+    """Figure 04_reach_confusion_matrix: for each actual tier, the share predicted as each tier."""
+    cm = confusion_matrix(y_true, y_pred, normalize="true")   # each row sums to 100%
     fig, ax = plt.subplots(figsize=(5.6, 4.4))
     ax.imshow(cm, cmap="Blues", vmin=0, vmax=1)
     for i in range(4):
         for j in range(4):
+            # white text on dark cells, dark text on light cells; the diagonal (correct predictions) in bold
             ax.text(j, i, f"{cm[i, j]:.0%}", ha="center", va="center", fontsize=10,
                     color="white" if cm[i, j] > 0.5 else INK, fontweight="bold" if i == j else "normal")
     ax.set_xticks(range(4), config.REACH_SHORT)
@@ -155,9 +176,10 @@ def plot_confusion(y_true, y_pred):
 
 
 def plot_importance(importance: dict):
+    """Figure 04_feature_importance: one bar chart per measure."""
     fig, axes = plt.subplots(1, 3, figsize=(13, 3.6))
     for ax, (name, s) in zip(axes, importance.items()):
-        s = s[::-1]
+        s = s[::-1]   # reversed, so the most important feature ends up at the top of the chart
         ax.barh(s.index, s.values, color=COLOR, height=0.65)
         ax.xaxis.set_major_locator(mtick.MaxNLocator(5, steps=[1, 2, 2.5, 5, 10]))
         ax.xaxis.set_major_formatter(percent)
@@ -170,10 +192,12 @@ def plot_importance(importance: dict):
 
 
 def save_outputs(d: ModelAData, results: dict, preds: dict):
+    """Save the score tables and every game's out-of-fold XGBoost prediction (used by the explain step)."""
     pd.concat(results, names=["Measure", "Model"]).to_csv(config.derived_file("model_a_results.csv"))
     oof = d.data[["AppID"]].copy()
     oof["pct_positive"], oof["pred_reception_xgb"] = d.y_reception.values, preds["Reception"]["XGBoost"]
     oof["reach_code"], oof["pred_reach_xgb"] = d.y_reach.values, preds["Reach"]["XGBoost"]
+    # Engagement covers only some games; the others stay blank (NaN)
     oof["log_playtime"] = np.nan
     oof["pred_log_playtime_xgb"] = np.nan
     oof.loc[d.engagement_rows.values, "log_playtime"] = d.y_eng.values
@@ -183,6 +207,7 @@ def save_outputs(d: ModelAData, results: dict, preds: dict):
 
 
 def main():
+    """Run this step: evaluate the three measures, draw the charts, run the robustness check, save everything."""
     d = load_data()
     status(f"{len(d.data):,} games × {len(d.features)} launch features; "
           f"engagement models use {d.engagement_rows.sum():,} games")
